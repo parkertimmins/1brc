@@ -141,6 +141,9 @@ public class CalculateAverage_ptimmins {
         return curr;
     }
 
+    static short[] digits10s = { 0, 100, 200, 300, 400, 500, 600, 700, 800, 900 };
+    static short[] digits1s = { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 };
+
     static void processMappedRange(MappedRange range, final HashMap<String, MeasurementAggregator> localAgg) {
         byte[] buf = new byte[200];
 
@@ -171,15 +174,12 @@ public class CalculateAverage_ptimmins {
             int numDigits = next - curr - 2; // subtract one for decimal and one for end newline
             short temp = 0;
             if (numDigits == 3) {
-                temp += ((char) range.mbb.get(curr)) - '0';
-                temp *= 10;
-                temp += ((char) range.mbb.get(curr + 1)) - '0';
-                temp *= 10;
+                temp += digits10s[((char) range.mbb.get(curr)) - '0'];
+                temp += digits1s[((char) range.mbb.get(curr + 1)) - '0'];
                 temp += ((char) range.mbb.get(curr + 3)) - '0'; // skip decimal
             }
             else {
-                temp += ((char) range.mbb.get(curr)) - '0';
-                temp *= 10;
+                temp += digits1s[((char) range.mbb.get(curr)) - '0'];
                 temp += ((char) range.mbb.get(curr + 2)) - '0'; // skip decimal
             }
             temp *= sign;
