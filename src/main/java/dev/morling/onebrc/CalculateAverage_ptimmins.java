@@ -17,9 +17,14 @@ package dev.morling.onebrc;
 
 import static java.util.stream.Collectors.*;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
@@ -52,63 +57,119 @@ public class CalculateAverage_ptimmins {
         private long count;
     }
 
-    public static void main(String[] args) throws IOException {
-        // Map<String, Double> measurements1 = Files.lines(Paths.get(FILE))
-        // .map(l -> l.split(";"))
-        // .collect(groupingBy(m -> m[0], averagingDouble(m -> Double.parseDouble(m[1]))));
-        //
-        // measurements1 = new TreeMap<>(measurements1.entrySet()
-        // .stream()
-        // .collect(toMap(e -> e.getKey(), e -> Math.round(e.getValue() * 10.0) / 10.0)));
-        // System.out.println(measurements1);
+    // static long endOfLineAfter(MappedByteBuffer mbb, long start, long limit) {
+    // long curr = start;
+    // while (curr < limit && mbb.getChar(curr) != '\n') {
+    //
+    // }
+    // System.out.print((char) mbb.get());
+    // }
 
-        // Collector<Measurement, MeasurementAggregator, ResultRow> collector = Collector.of(
-        // MeasurementAggregator::new,
-        // (a, m) -> {
-        // a.min = Math.min(a.min, m.value);
-        // a.max = Math.max(a.max, m.value);
-        // a.sum += m.value;
-        // a.count++;
-        // },
-        // (agg1, agg2) -> {
-        // var res = new MeasurementAggregator();
-        // res.min = Math.min(agg1.min, agg2.min);
-        // res.max = Math.max(agg1.max, agg2.max);
-        // res.sum = agg1.sum + agg2.sum;
-        // res.count = agg1.count + agg2.count;
-        //
-        // return res;
-        // },
-        // agg -> {
-        // return new ResultRow(agg.min, agg.sum / agg.count, agg.max);
-        // });
+    static class MappedRange {
+        MappedByteBuffer mbb;
 
-        final HashMap<String, MeasurementAggregator> cache = new HashMap<>();
-        Files.lines(Paths.get(FILE)).forEach(line -> {
-            var m = new Measurement(line.split(";"));
-            if (cache.containsKey(m.station())) {
-                var ma = cache.get(m.station());
+        boolean frontPad;
+        boolean backPad;
 
-                ma.count += 1;
-                ma.sum += m.value;
-                ma.min = Math.min(m.value, ma.min);
-                ma.max = Math.max(m.value, ma.max);
+        int start;
+
+        // full length including any padding
+        long len;
+
+        // probably not useful
+        long offset;
+
+        public MappedRange(MappedByteBuffer mbb, boolean frontPad, boolean backPad, long len, long offset) {
+            this.mbb = mbb;
+            this.frontPad = frontPad;
+            this.backPad = backPad;
+            this.len = len;
+            this.offset = offset;
+        }
+
+        @Override
+        public String toString() {
+            return "MappedRange{" +
+                    "mbb=" + mbb +
+                    ", frontPad=" + frontPad +
+                    ", backPad=" + backPad +
+                    ", start=" + start +
+                    ", len=" + len +
+                    ", offset=" + offset +
+                    '}';
+        }
+    }
+
+    static ArrayList<MappedRange> openMappedFiles(FileChannel channel) throws IOException {
+        final long fileSize = channel.size();
+        final long targetSize = 1L << 30; // 1GB
+        final long maxSize = 2L << 30; // 2GB
+        final long padding = 200; // max entry size is 107ish == 100 (station) + 1 (semicolon) + 5 (temp, eg -99.9) + 1 (newline)
+
+        ArrayList<MappedRange> ranges = new ArrayList<>();
+        long offset = 0;
+        while (offset < fileSize) {
+            long size;
+            boolean backPad;
+            if (offset + maxSize >= fileSize) {
+                size = fileSize - offset;
+                backPad = false;
             }
             else {
-                var ma = new MeasurementAggregator();
-                ma.count = 1;
-                ma.sum = m.value;
-                ma.max = m.value;
-                ma.min = m.value;
-                cache.put(m.station(), ma);
+                size = targetSize;
+                backPad = true;
             }
-        });
+            boolean frontPad = !ranges.isEmpty();
+            MappedByteBuffer mbb = channel.map(FileChannel.MapMode.READ_ONLY, offset, size);
+            ranges.add(new MappedRange(mbb, frontPad, backPad, size, offset));
 
-        Map<String, ResultRow> res = new TreeMap<>();
-        for (Map.Entry<String, MeasurementAggregator> entry : cache.entrySet()) {
-            var ma = entry.getValue();
-            res.put(entry.getKey(), new ResultRow(ma.min, ma.sum / ma.count, ma.max));
+            offset += size;
+            if (backPad) {
+                offset -= padding;
+            }
         }
-        System.out.println(res);
+        return ranges;
+    }
+
+    public static void main(String[] args) throws IOException {
+
+        RandomAccessFile file = new RandomAccessFile(FILE, "r");
+        FileChannel channel = file.getChannel();
+
+        ArrayList<MappedRange> mappedRanges = openMappedFiles(channel);
+
+        for (MappedRange range : mappedRanges) {
+
+            System.out.println(range);
+        }
+
+
+        // final HashMap<String, MeasurementAggregator> cache = new HashMap<>();
+        // Files.lines(Paths.get(FILE)).forEach(line -> {
+        // var m = new Measurement(line.split(";"));
+        // if (cache.containsKey(m.station())) {
+        // var ma = cache.get(m.station());
+        //
+        // ma.count += 1;
+        // ma.sum += m.value;
+        // ma.min = Math.min(m.value, ma.min);
+        // ma.max = Math.max(m.value, ma.max);
+        // }
+        // else {
+        // var ma = new MeasurementAggregator();
+        // ma.count = 1;
+        // ma.sum = m.value;
+        // ma.max = m.value;
+        // ma.min = m.value;
+        // cache.put(m.station(), ma);
+        // }
+        // });
+        //
+        // Map<String, ResultRow> res = new TreeMap<>();
+        // for (Map.Entry<String, MeasurementAggregator> entry : cache.entrySet()) {
+        // var ma = entry.getValue();
+        // res.put(entry.getKey(), new ResultRow(ma.min, ma.sum / ma.count, ma.max));
+        // }
+        // System.out.println(res);
     }
 }
