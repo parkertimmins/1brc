@@ -29,12 +29,6 @@ public class CalculateAverage_ptimmins {
     private static final String FILE = "./measurements.txt";
     // private static final String FILE = "./little_measurements.txt";
 
-    private static record Measurement(String station, double value) {
-        private Measurement(String[] parts) {
-            this(parts[0], Double.parseDouble(parts[1]));
-        }
-    }
-
     private static record ResultRow(double min, double mean, double max) {
         public String toString() {
             return round(min) + "/" + round(mean) + "/" + round(max);
@@ -46,14 +40,14 @@ public class CalculateAverage_ptimmins {
     };
 
     private static class MeasurementAggregator {
-        private double min = Double.POSITIVE_INFINITY;
-        private double max = Double.NEGATIVE_INFINITY;
-        private double sum;
+        private short min;
+        private short max;
+        private long sum;
         private long count;
 
         void merge(MeasurementAggregator other) {
-            min = Math.min(min, other.min);
-            max = Math.max(max, other.max);
+            min = (short) Math.min(min, other.min);
+            max = (short) Math.max(max, other.max);
             sum += other.sum;
             count += other.count;
         }
@@ -192,20 +186,18 @@ public class CalculateAverage_ptimmins {
 
             curr = next;
 
-            double tempWithDecimal = ((double) temp) / 10;
-            var m = new Measurement(station, tempWithDecimal);
-            if (localAgg.containsKey(m.station())) {
-                var ma = localAgg.get(m.station());
-                ma.count += 1;
-                ma.sum += m.value;
-                ma.min = Math.min(m.value, ma.min);
-                ma.max = Math.max(m.value, ma.max);
+            var currentVal = localAgg.get(station);
+            if (currentVal != null) {
+                currentVal.count += 1;
+                currentVal.sum += temp;
+                currentVal.min = (short) Math.min(temp, currentVal.min);
+                currentVal.max = (short) Math.max(temp, currentVal.max);
             }
             else {
                 var ma = new MeasurementAggregator();
                 ma.count = 1;
-                ma.sum = ma.max = ma.min = m.value;
-                localAgg.put(m.station(), ma);
+                ma.sum = ma.max = ma.min = temp;
+                localAgg.put(station, ma);
             }
         }
     }
@@ -245,15 +237,20 @@ public class CalculateAverage_ptimmins {
         final ArrayList<MappedRange> mappedRanges = openMappedFiles(channel, numSplits);
         final ArrayList<HashMap<String, MeasurementAggregator>> localAggs = new ArrayList<>(numThreads);
 
+        long startTime = System.currentTimeMillis();
         Thread[] threads = new Thread[numThreads];
         for (int t = 0; t < numThreads; t++) {
             localAggs.add(new HashMap<>());
             int threadId = t;
+
+            System.err.println("Thread " + threadId + " start processing at " + (System.currentTimeMillis() - startTime));
             threads[t] = new Thread(() -> {
                 var localAgg = localAggs.get(threadId);
                 for (int split = 0; split < rangesPerThread; ++split) {
+                    System.err.println("Thread " + threadId + " split " + split + " at " + (System.currentTimeMillis() - startTime));
                     int splitId = rangesPerThread * threadId + split;
                     processMappedRange(mappedRanges.get(splitId), localAgg);
+                    System.err.println("Thread " + threadId + " end split " + split + " at " + (System.currentTimeMillis() - startTime));
                 }
             }, "Thread-" + t);
 
@@ -264,11 +261,15 @@ public class CalculateAverage_ptimmins {
             thread.join();
         }
 
+        System.err.println("Start merge at " + (System.currentTimeMillis() - startTime));
+
         var globalAggs = mergeAggregations(localAggs);
+
+        System.err.println("End merge at " + (System.currentTimeMillis() - startTime));
         Map<String, ResultRow> res = new TreeMap<>();
         for (Map.Entry<String, MeasurementAggregator> entry : globalAggs.entrySet()) {
             var ma = entry.getValue();
-            res.put(entry.getKey(), new ResultRow(ma.min, ma.sum / ma.count, ma.max));
+            res.put(entry.getKey(), new ResultRow(ma.min / 10.0, (ma.sum / 10.0) / ma.count, ma.max / 10.0));
         }
         System.out.println(res);
     }
