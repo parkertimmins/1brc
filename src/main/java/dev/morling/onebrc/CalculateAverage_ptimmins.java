@@ -151,7 +151,6 @@ public class CalculateAverage_ptimmins {
         int limit = range.backPad ? findNextEntryStart(range.mbb, range.len - padding) : range.len;
 
         while (curr < limit) {
-            int next = findNextEntryStart(range.mbb, curr);
 
             int endStr = findNextSemicolon(range.mbb, curr);
 
@@ -171,20 +170,20 @@ public class CalculateAverage_ptimmins {
                 curr++;
             }
 
-            int numDigits = next - curr - 2; // subtract one for decimal and one for end newline
+            int numDigits = range.mbb.get(curr + 2) == '.' ? 3 : 2;
             short temp = 0;
             if (numDigits == 3) {
                 temp += digits10s[((char) range.mbb.get(curr)) - '0'];
                 temp += digits1s[((char) range.mbb.get(curr + 1)) - '0'];
                 temp += ((char) range.mbb.get(curr + 3)) - '0'; // skip decimal
+                curr += 5;
             }
             else {
                 temp += digits1s[((char) range.mbb.get(curr)) - '0'];
                 temp += ((char) range.mbb.get(curr + 2)) - '0'; // skip decimal
+                curr += 4;
             }
             temp *= sign;
-
-            curr = next;
 
             var currentVal = localAgg.get(station);
             if (currentVal != null) {
@@ -227,6 +226,7 @@ public class CalculateAverage_ptimmins {
         RandomAccessFile file = new RandomAccessFile(FILE, "r");
         FileChannel channel = file.getChannel();
 
+        // int numThreads = 1;
         int numThreads = Runtime.getRuntime().availableProcessors();
         System.out.println("Running on " + numThreads + " threads");
 
