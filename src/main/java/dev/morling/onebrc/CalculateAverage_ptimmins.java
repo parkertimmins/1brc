@@ -21,10 +21,9 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.*;
+import java.util.zip.CRC32;
+import java.util.zip.CRC32C;
 
 public class CalculateAverage_ptimmins {
     private static final String FILE = "./measurements.txt";
@@ -51,6 +50,22 @@ public class CalculateAverage_ptimmins {
             max = (short) Math.max(max, other.max);
             sum += other.sum;
             count += other.count;
+        }
+
+        void merge(OpenHashTable.Entry other) {
+            min = (short) Math.min(min, other.min);
+            max = (short) Math.max(max, other.max);
+            sum += other.sum;
+            count += other.count;
+        }
+
+        static MeasurementAggregator fromEntry(OpenHashTable.Entry other) {
+            var ma = new MeasurementAggregator();
+            ma.min = other.min;
+            ma.max = other.max;
+            ma.sum = other.sum;
+            ma.count = other.count;
+            return ma;
         }
     }
     //
@@ -90,6 +105,64 @@ public class CalculateAverage_ptimmins {
     //
     // };
     //
+
+    static class OpenHashTable {
+        static class Entry {
+            byte[] key;
+            short min;
+            short max;
+            long sum;
+            long count;
+        }
+
+        static final int bits = 14;
+        static final int tableSize = 1 << bits; // 16k
+        static final int shift = 32 - bits - 1;
+        static final int mask = tableSize - 1;
+
+        final Entry[] entries = new Entry[tableSize];
+
+        void add(byte[] buf, int sLen, short val, int hash) {
+            int idx = (hash >> shift) & mask;
+
+            while (true) {
+                Entry entry = entries[idx];
+
+                // key not present, so add it
+                if (entry == null) {
+                    entry = entries[idx] = new Entry();
+                    entry.key = Arrays.copyOf(buf, sLen);
+                    // entry.key = new String(buf, 0, sLen, StandardCharsets.UTF_8); // for UTF-8 encoding
+                    entry.min = entry.max = val;
+                    entry.sum = val;
+                    entry.count = 1;
+                    break;
+                }
+                else {
+                    if (eq(entry.key, buf, sLen)) {
+                        entry.min = (short) Math.min(entry.min, val);
+                        entry.max = (short) Math.max(entry.max, val);
+                        entry.sum += val;
+                        entry.count++;
+                        break;
+                    }
+                    else {
+                        idx = (idx + 1) & mask;
+                    }
+                }
+            }
+        }
+    }
+
+    static boolean eq(byte[] a, byte[] b, int len) {
+//        return Arrays.equals(a, 0, len, b, 0, len);
+        for (int i = 0; i < len; ++i) {
+            if (a[i] != b[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     static class MappedRange {
         MappedByteBuffer mbb;
@@ -182,24 +255,27 @@ public class CalculateAverage_ptimmins {
     static short[] digits10s = { 0, 100, 200, 300, 400, 500, 600, 700, 800, 900 };
     static short[] digits1s = { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 };
 
-    static void processMappedRange(MappedRange range, final HashMap<String, MeasurementAggregator> localAgg) {
+    static void processMappedRange(MappedRange range, final OpenHashTable localAgg) {
         byte[] buf = new byte[200];
 
         int curr = range.frontPad ? findNextEntryStart(range.mbb, 0) : 0;
         int limit = range.backPad ? findNextEntryStart(range.mbb, range.len - padding) : range.len;
 
+        CRC32C crc32c = new CRC32C();
         while (curr < limit) {
 
             int i = 0;
             byte val = range.mbb.get(curr);
+            crc32c.reset();
             while (val != ';') {
+                crc32c.update(val);
                 buf[i] = val;
                 i++;
                 curr++;
                 val = range.mbb.get(curr);
             }
 
-            String station = new String(buf, 0, i, StandardCharsets.UTF_8); // for UTF-8 encoding
+            int sLen = i;
 
             curr++; // skip semicolon
 
@@ -224,36 +300,27 @@ public class CalculateAverage_ptimmins {
             }
             temp *= sign;
 
-            var currentVal = localAgg.get(station);
-            if (currentVal != null) {
-                currentVal.count += 1;
-                currentVal.sum += temp;
-                currentVal.min = (short) Math.min(temp, currentVal.min);
-                currentVal.max = (short) Math.max(temp, currentVal.max);
-            }
-            else {
-                var ma = new MeasurementAggregator();
-                ma.count = 1;
-                ma.sum = ma.max = ma.min = temp;
-                localAgg.put(station, ma);
-            }
+            localAgg.add(buf, sLen, temp, (int) crc32c.getValue());
         }
     }
 
-    static HashMap<String, MeasurementAggregator> mergeAggregations(ArrayList<HashMap<String, MeasurementAggregator>> localAggs) {
+    static HashMap<String, MeasurementAggregator> mergeAggregations(ArrayList<OpenHashTable> localAggs) {
         HashMap<String, MeasurementAggregator> global = new HashMap<>();
 
         for (var agg : localAggs) {
-            for (Map.Entry<String, MeasurementAggregator> entry : agg.entrySet()) {
-                var station = entry.getKey();
-                var ma = entry.getValue();
+            for (OpenHashTable.Entry entry : agg.entries) {
 
+                if (entry == null) {
+                    continue;
+                }
+
+                String station = new String(entry.key, StandardCharsets.UTF_8); // for UTF-8 encoding
                 var currentVal = global.get(station);
                 if (currentVal != null) {
-                    currentVal.merge(ma);
+                    currentVal.merge(entry);
                 }
                 else {
-                    global.put(station, ma);
+                    global.put(station, MeasurementAggregator.fromEntry(entry));
                 }
             }
         }
@@ -274,12 +341,12 @@ public class CalculateAverage_ptimmins {
         int numSplits = rangesPerThread * numThreads;
 
         final ArrayList<MappedRange> mappedRanges = openMappedFiles(channel, numSplits);
-        final ArrayList<HashMap<String, MeasurementAggregator>> localAggs = new ArrayList<>(numThreads);
+        final ArrayList<OpenHashTable> localAggs = new ArrayList<>(numThreads);
 
         long startTime = System.currentTimeMillis();
         Thread[] threads = new Thread[numThreads];
         for (int t = 0; t < numThreads; t++) {
-            localAggs.add(new HashMap<>());
+            localAggs.add(new OpenHashTable());
             int threadId = t;
 
             System.err.println("Thread " + threadId + " start processing at " + (System.currentTimeMillis() - startTime));
