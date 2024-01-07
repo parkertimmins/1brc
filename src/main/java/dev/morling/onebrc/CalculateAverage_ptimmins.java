@@ -15,6 +15,7 @@
  */
 package dev.morling.onebrc;
 
+import java.lang.reflect.Array;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -52,6 +53,43 @@ public class CalculateAverage_ptimmins {
             count += other.count;
         }
     }
+    //
+    //
+    // static class OpenHashTable {
+    // static final int numEntries = 20000;
+    //
+    // // entry fields
+    // // 2 - non-inline string index
+    // // 10ish - str chars (if small enough)
+    // // string hash ?
+    // // 2 min
+    // // 2 max
+    // // 8 sum
+    // // 8 count
+    // //
+    // static private final int constantSize = 2 + 2 + 2 + 8 + 8;
+    //
+    //
+    // private final byte[] bytes;
+    // private final int numInlineStrSize;
+    // private final int elementSize;
+    //
+    // private final ArrayList<String> nonInlineStrs = new ArrayList<>();
+    //
+    // OpenHashTable(int numInlineStrSize) {
+    // this.numInlineStrSize = numInlineStrSize;
+    // this.elementSize = numInlineStrSize + constantSize;
+    // this.bytes = new byte[elementSize * numEntries];
+    // }
+    //
+    // short getNonInlineIdx(int index) {
+    // final int elementStart = index * elementSize;
+    // return (short) (bytes[elementStart] << 8 + bytes[elementStart]);
+    // }
+    //
+    //
+    // };
+    //
 
     static class MappedRange {
         MappedByteBuffer mbb;
@@ -152,17 +190,18 @@ public class CalculateAverage_ptimmins {
 
         while (curr < limit) {
 
-            int endStr = findNextSemicolon(range.mbb, curr);
-
-            int stationLen = endStr - curr;
-            for (int i = 0; i < stationLen; ++i) {
-                buf[i] = range.mbb.get(curr);
+            int i = 0;
+            byte val = range.mbb.get(curr);
+            while (val != ';') {
+                buf[i] = val;
+                i++;
                 curr++;
+                val = range.mbb.get(curr);
             }
 
-            String station = new String(buf, 0, stationLen, StandardCharsets.UTF_8); // for UTF-8 encoding
+            String station = new String(buf, 0, i, StandardCharsets.UTF_8); // for UTF-8 encoding
 
-            curr = endStr + 1;
+            curr++; // skip semicolon
 
             short sign = 1;
             if (range.mbb.get(curr) == '-') {
