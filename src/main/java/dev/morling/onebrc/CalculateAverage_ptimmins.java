@@ -139,7 +139,7 @@ public class CalculateAverage_ptimmins {
                     break;
                 }
                 else {
-                    if (eq(entry.key, buf, sLen)) {
+                    if (entry.key.length == sLen && Arrays.equals(entry.key, 0, sLen, buf, 0, sLen)) {
                         entry.min = (short) Math.min(entry.min, val);
                         entry.max = (short) Math.max(entry.max, val);
                         entry.sum += val;
@@ -155,13 +155,7 @@ public class CalculateAverage_ptimmins {
     }
 
     static boolean eq(byte[] a, byte[] b, int len) {
-//        return Arrays.equals(a, 0, len, b, 0, len);
-        for (int i = 0; i < len; ++i) {
-            if (a[i] != b[i]) {
-                return false;
-            }
-        }
-        return true;
+        return Arrays.equals(a, 0, len, b, 0, len);
     }
 
     static class MappedRange {
