@@ -15,6 +15,12 @@
  */
 package dev.morling.onebrc;
 
+import jdk.incubator.vector.ByteVector;
+
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+
+import java.lang.foreign.ValueLayout;
 import java.lang.reflect.Array;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
@@ -22,7 +28,6 @@ import java.io.RandomAccessFile;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.*;
-import java.util.zip.CRC32;
 import java.util.zip.CRC32C;
 
 public class CalculateAverage_ptimmins {
@@ -159,21 +164,21 @@ public class CalculateAverage_ptimmins {
     }
 
     static class MappedRange {
-        MappedByteBuffer mbb;
+        MemorySegment ms;
 
         boolean frontPad;
         boolean backPad;
 
-        int start;
+        long start;
 
         // full length including any padding
-        int len;
+        long len;
 
         // probably not useful
         long offset;
 
-        public MappedRange(MappedByteBuffer mbb, boolean frontPad, boolean backPad, int len, long offset) {
-            this.mbb = mbb;
+        public MappedRange(MemorySegment ms, boolean frontPad, boolean backPad, long len, long offset) {
+            this.ms = ms;
             this.frontPad = frontPad;
             this.backPad = backPad;
             this.len = len;
@@ -183,7 +188,7 @@ public class CalculateAverage_ptimmins {
         @Override
         public String toString() {
             return "MappedRange{" +
-                    "mbb=" + mbb +
+                    "ms=" + ms +
                     ", frontPad=" + frontPad +
                     ", backPad=" + backPad +
                     ", start=" + start +
@@ -197,7 +202,9 @@ public class CalculateAverage_ptimmins {
     static final int padding = 200; // max entry size is 107ish == 100 (station) + 1 (semicolon) + 5 (temp, eg -99.9) + 1 (newline)
 
     static ArrayList<MappedRange> openMappedFiles(FileChannel channel, int numSplits) throws IOException {
+
         final long fileSize = channel.size();
+        MemorySegment ms = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
 
         final long avgSize = fileSize / numSplits;
         final long maxSize = (long) (1.5 * avgSize);
@@ -205,21 +212,20 @@ public class CalculateAverage_ptimmins {
         ArrayList<MappedRange> ranges = new ArrayList<>();
         long offset = 0;
         while (offset < fileSize) {
-            int size;
+            long size;
             boolean backPad;
             if (offset + maxSize >= fileSize) {
-                size = Math.toIntExact(fileSize - offset);
+                size = fileSize - offset;
                 backPad = false;
             }
             else {
-                size = Math.toIntExact(avgSize);
+                size = avgSize;
                 backPad = true;
             }
 
             System.out.println("making split with size: " + size);
             boolean frontPad = !ranges.isEmpty();
-            MappedByteBuffer mbb = channel.map(FileChannel.MapMode.READ_ONLY, offset, size);
-            ranges.add(new MappedRange(mbb, frontPad, backPad, size, offset));
+            ranges.add(new MappedRange(ms, frontPad, backPad, size, offset));
 
             offset += size;
             if (backPad) {
@@ -229,20 +235,12 @@ public class CalculateAverage_ptimmins {
         return ranges;
     }
 
-    static int findNextEntryStart(MappedByteBuffer mbb, int offset) {
-        int curr = offset;
-        while (mbb.get(curr) != '\n') {
+    static long findNextEntryStart(MemorySegment ms, long offset) {
+        long curr = offset;
+        while (ms.get(ValueLayout.JAVA_BYTE, curr) != '\n') {
             curr++;
         }
         curr++;
-        return curr;
-    }
-
-    static int findNextSemicolon(MappedByteBuffer mbb, int offset) {
-        int curr = offset;
-        while (mbb.get(curr) != ';') {
-            curr++;
-        }
         return curr;
     }
 
@@ -252,21 +250,21 @@ public class CalculateAverage_ptimmins {
     static void processMappedRange(MappedRange range, final OpenHashTable localAgg) {
         byte[] buf = new byte[128];
 
-        int curr = range.frontPad ? findNextEntryStart(range.mbb, 0) : 0;
-        int limit = range.backPad ? range.len - padding : range.len;
+        long curr = range.frontPad ? findNextEntryStart(range.ms, range.offset) : range.offset;
+        long limit = range.backPad ? range.offset + range.len - padding : range.offset + range.len;
 
         CRC32C crc32c = new CRC32C();
         while (curr < limit) {
 
             int i = 0;
-            byte val = range.mbb.get(curr);
+            byte val = range.ms.get(ValueLayout.JAVA_BYTE, curr);
             crc32c.reset();
             while (val != ';') {
                 crc32c.update(val);
                 buf[i] = val;
                 i++;
                 curr++;
-                val = range.mbb.get(curr);
+                val = range.ms.get(ValueLayout.JAVA_BYTE, curr);
             }
 
             int sLen = i;
@@ -274,22 +272,22 @@ public class CalculateAverage_ptimmins {
             curr++; // skip semicolon
 
             short sign = 1;
-            if (range.mbb.get(curr) == '-') {
+            if (range.ms.get(ValueLayout.JAVA_BYTE, curr) == '-') {
                 sign = -1;
                 curr++;
             }
 
-            int numDigits = range.mbb.get(curr + 2) == '.' ? 3 : 2;
+            int numDigits = range.ms.get(ValueLayout.JAVA_BYTE, curr + 2) == '.' ? 3 : 2;
             short temp = 0;
             if (numDigits == 3) {
-                temp += digits10s[((char) range.mbb.get(curr)) - '0'];
-                temp += digits1s[((char) range.mbb.get(curr + 1)) - '0'];
-                temp += ((char) range.mbb.get(curr + 3)) - '0'; // skip decimal
+                temp += digits10s[((char) range.ms.get(ValueLayout.JAVA_BYTE, curr)) - '0'];
+                temp += digits1s[((char) range.ms.get(ValueLayout.JAVA_BYTE, curr + 1)) - '0'];
+                temp += ((char) range.ms.get(ValueLayout.JAVA_BYTE, curr + 3)) - '0'; // skip decimal
                 curr += 5;
             }
             else {
-                temp += digits1s[((char) range.mbb.get(curr)) - '0'];
-                temp += ((char) range.mbb.get(curr + 2)) - '0'; // skip decimal
+                temp += digits1s[((char) range.ms.get(ValueLayout.JAVA_BYTE, curr)) - '0'];
+                temp += ((char) range.ms.get(ValueLayout.JAVA_BYTE, curr + 2)) - '0'; // skip decimal
                 curr += 4;
             }
             temp *= sign;
@@ -331,8 +329,8 @@ public class CalculateAverage_ptimmins {
         System.out.println("Running on " + numThreads + " threads");
 
         long fileSize = channel.size();
-        int rangesPerThread = 3;
-        int numSplits = rangesPerThread * numThreads;
+        int rangesPerThread = 1;
+        int numSplits = numThreads;
 
         final ArrayList<MappedRange> mappedRanges = openMappedFiles(channel, numSplits);
         final ArrayList<OpenHashTable> localAggs = new ArrayList<>(numThreads);
