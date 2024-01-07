@@ -250,10 +250,10 @@ public class CalculateAverage_ptimmins {
     static short[] digits1s = { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 };
 
     static void processMappedRange(MappedRange range, final OpenHashTable localAgg) {
-        byte[] buf = new byte[200];
+        byte[] buf = new byte[128];
 
         int curr = range.frontPad ? findNextEntryStart(range.mbb, 0) : 0;
-        int limit = range.backPad ? findNextEntryStart(range.mbb, range.len - padding) : range.len;
+        int limit = range.backPad ? range.len - padding : range.len;
 
         CRC32C crc32c = new CRC32C();
         while (curr < limit) {
