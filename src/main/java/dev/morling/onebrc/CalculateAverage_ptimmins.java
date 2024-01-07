@@ -28,6 +28,7 @@ import java.io.RandomAccessFile;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.CRC32C;
 
 public class CalculateAverage_ptimmins {
@@ -198,7 +199,7 @@ public class CalculateAverage_ptimmins {
         }
     }
 
-    static final long MAX_MMAP_SIZE = Integer.MAX_VALUE;
+    static final long batchSize = 10_000_000;
     static final int padding = 200; // max entry size is 107ish == 100 (station) + 1 (semicolon) + 5 (temp, eg -99.9) + 1 (newline)
 
     static ArrayList<MappedRange> openMappedFiles(FileChannel channel, int numSplits) throws IOException {
@@ -247,24 +248,24 @@ public class CalculateAverage_ptimmins {
     static short[] digits10s = { 0, 100, 200, 300, 400, 500, 600, 700, 800, 900 };
     static short[] digits1s = { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 };
 
-    static void processMappedRange(MappedRange range, final OpenHashTable localAgg) {
+    static void processMappedRange(MemorySegment ms, boolean frontPad, boolean backPad, long start, long end, final OpenHashTable localAgg) {
         byte[] buf = new byte[128];
 
-        long curr = range.frontPad ? findNextEntryStart(range.ms, range.offset) : range.offset;
-        long limit = range.backPad ? range.offset + range.len - padding : range.offset + range.len;
+        long curr = frontPad ? findNextEntryStart(ms, start) : start;
+        long limit = backPad ? end - padding : end;
 
         CRC32C crc32c = new CRC32C();
         while (curr < limit) {
 
             int i = 0;
-            byte val = range.ms.get(ValueLayout.JAVA_BYTE, curr);
+            byte val = ms.get(ValueLayout.JAVA_BYTE, curr);
             crc32c.reset();
             while (val != ';') {
                 crc32c.update(val);
                 buf[i] = val;
                 i++;
                 curr++;
-                val = range.ms.get(ValueLayout.JAVA_BYTE, curr);
+                val = ms.get(ValueLayout.JAVA_BYTE, curr);
             }
 
             int sLen = i;
@@ -272,22 +273,22 @@ public class CalculateAverage_ptimmins {
             curr++; // skip semicolon
 
             short sign = 1;
-            if (range.ms.get(ValueLayout.JAVA_BYTE, curr) == '-') {
+            if (ms.get(ValueLayout.JAVA_BYTE, curr) == '-') {
                 sign = -1;
                 curr++;
             }
 
-            int numDigits = range.ms.get(ValueLayout.JAVA_BYTE, curr + 2) == '.' ? 3 : 2;
+            int numDigits = ms.get(ValueLayout.JAVA_BYTE, curr + 2) == '.' ? 3 : 2;
             short temp = 0;
             if (numDigits == 3) {
-                temp += digits10s[((char) range.ms.get(ValueLayout.JAVA_BYTE, curr)) - '0'];
-                temp += digits1s[((char) range.ms.get(ValueLayout.JAVA_BYTE, curr + 1)) - '0'];
-                temp += ((char) range.ms.get(ValueLayout.JAVA_BYTE, curr + 3)) - '0'; // skip decimal
+                temp += digits10s[((char) ms.get(ValueLayout.JAVA_BYTE, curr)) - '0'];
+                temp += digits1s[((char) ms.get(ValueLayout.JAVA_BYTE, curr + 1)) - '0'];
+                temp += ((char) ms.get(ValueLayout.JAVA_BYTE, curr + 3)) - '0'; // skip decimal
                 curr += 5;
             }
             else {
-                temp += digits1s[((char) range.ms.get(ValueLayout.JAVA_BYTE, curr)) - '0'];
-                temp += ((char) range.ms.get(ValueLayout.JAVA_BYTE, curr + 2)) - '0'; // skip decimal
+                temp += digits1s[((char) ms.get(ValueLayout.JAVA_BYTE, curr)) - '0'];
+                temp += ((char) ms.get(ValueLayout.JAVA_BYTE, curr + 2)) - '0'; // skip decimal
                 curr += 4;
             }
             temp *= sign;
@@ -328,30 +329,41 @@ public class CalculateAverage_ptimmins {
         int numThreads = Runtime.getRuntime().availableProcessors();
         System.out.println("Running on " + numThreads + " threads");
 
-        long fileSize = channel.size();
-        int rangesPerThread = 1;
-        int numSplits = numThreads;
-
-        final ArrayList<MappedRange> mappedRanges = openMappedFiles(channel, numSplits);
+        final long fileSize = channel.size();
+        final MemorySegment ms = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
         final ArrayList<OpenHashTable> localAggs = new ArrayList<>(numThreads);
 
         long startTime = System.currentTimeMillis();
         Thread[] threads = new Thread[numThreads];
+
+        final AtomicLong progress = new AtomicLong(0);
+
+        class Task implements Runnable {
+            final int threadId;
+
+            Task(int threadId) {
+                this.threadId = threadId;
+            }
+
+            @Override
+            public void run() {
+                var localAgg = localAggs.get(threadId);
+                while (progress.get() < fileSize) {
+                    long startBatch = progress.getAndAdd(batchSize);
+                    long endBatch = Math.min(startBatch + batchSize, fileSize);
+                    boolean first = startBatch == 0;
+                    boolean frontPad = !first;
+                    boolean last = endBatch == fileSize;
+                    boolean backPad = !last;
+                    System.err.println("Thread " + threadId + " processing " + startBatch + " to " + endBatch + " at " + (System.currentTimeMillis() - startTime));
+                    processMappedRange(ms, frontPad, backPad, startBatch, endBatch, localAgg);
+                }
+            }
+        }
+
         for (int t = 0; t < numThreads; t++) {
             localAggs.add(new OpenHashTable());
-            int threadId = t;
-
-            System.err.println("Thread " + threadId + " start processing at " + (System.currentTimeMillis() - startTime));
-            threads[t] = new Thread(() -> {
-                var localAgg = localAggs.get(threadId);
-                for (int split = 0; split < rangesPerThread; ++split) {
-                    System.err.println("Thread " + threadId + " split " + split + " at " + (System.currentTimeMillis() - startTime));
-                    int splitId = rangesPerThread * threadId + split;
-                    processMappedRange(mappedRanges.get(splitId), localAgg);
-                    System.err.println("Thread " + threadId + " end split " + split + " at " + (System.currentTimeMillis() - startTime));
-                }
-            }, "Thread-" + t);
-
+            threads[t] = new Thread(new Task(t), "Thread-" + t);
             threads[t].start();
         }
 
