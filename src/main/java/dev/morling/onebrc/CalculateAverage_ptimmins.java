@@ -24,6 +24,7 @@ import java.lang.foreign.MemorySegment;
 
 import java.lang.foreign.ValueLayout;
 import java.lang.reflect.Array;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
@@ -36,7 +37,7 @@ import java.util.zip.CRC32C;
 
 public class CalculateAverage_ptimmins {
     private static final String FILE = "./measurements.txt";
-    // private static final String FILE = "./little_measurements.txt";
+    // private static final String FILE = "./full_measurements.no_license";
 
     private static record ResultRow(double min, double mean, double max) {
         public String toString() {
@@ -208,40 +209,6 @@ public class CalculateAverage_ptimmins {
     static final long batchSize = 10_000_000;
     static final int padding = 200; // max entry size is 107ish == 100 (station) + 1 (semicolon) + 5 (temp, eg -99.9) + 1 (newline)
 
-    static ArrayList<MappedRange> openMappedFiles(FileChannel channel, int numSplits) throws IOException {
-
-        final long fileSize = channel.size();
-        MemorySegment ms = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
-
-        final long avgSize = fileSize / numSplits;
-        final long maxSize = (long) (1.5 * avgSize);
-
-        ArrayList<MappedRange> ranges = new ArrayList<>();
-        long offset = 0;
-        while (offset < fileSize) {
-            long size;
-            boolean backPad;
-            if (offset + maxSize >= fileSize) {
-                size = fileSize - offset;
-                backPad = false;
-            }
-            else {
-                size = avgSize;
-                backPad = true;
-            }
-
-            System.out.println("making split with size: " + size);
-            boolean frontPad = !ranges.isEmpty();
-            ranges.add(new MappedRange(ms, frontPad, backPad, size, offset));
-
-            offset += size;
-            if (backPad) {
-                offset -= padding;
-            }
-        }
-        return ranges;
-    }
-
     static long findNextEntryStart(MemorySegment ms, long offset) {
         long curr = offset;
         while (ms.get(ValueLayout.JAVA_BYTE, curr) != '\n') {
@@ -260,14 +227,11 @@ public class CalculateAverage_ptimmins {
         long curr = start;
         long limit = end;
 
-        CRC32C crc32c = new CRC32C();
         while (curr < limit) {
 
             int i = 0;
             byte val = ms.get(ValueLayout.JAVA_BYTE, curr);
-            crc32c.reset();
             while (val != ';') {
-                crc32c.update(val);
                 buf[i] = val;
                 i++;
                 curr++;
@@ -275,6 +239,7 @@ public class CalculateAverage_ptimmins {
             }
 
             int sLen = i;
+            int hash = hash(buf, sLen);
 
             curr++; // skip semicolon
 
@@ -299,8 +264,22 @@ public class CalculateAverage_ptimmins {
             }
             temp *= sign;
 
-            localAgg.add(buf, sLen, temp, (int) crc32c.getValue());
+            localAgg.add(buf, sLen, temp, hash);
         }
+    }
+
+    static int hash(byte[] buf, int sLen) {
+        // if shorter than 8 chars, mask out upper bits
+        long mask = sLen < 8 ? -(1L << ((8 - sLen) << 3)) : 0xFFFFFFFFL;
+        long val = ((buf[0] & 0xffL) << 56) | ((buf[1] & 0xffL) << 48) | ((buf[2] & 0xffL) << 40) | ((buf[3] & 0xffL) << 32) | ((buf[4] & 0xffL) << 24)
+                | ((buf[5] & 0xffL) << 16) | ((buf[6] & 0xFFL) << 8) | (buf[7] & 0xffL);
+        // long val1 = ByteBuffer.wrap(buf, 0, 8).getLong();
+        val &= mask;
+
+        // lemire: https://lemire.me/blog/2023/07/14/recognizing-string-prefixes-with-simd-instructions/
+        int hash = (int) (((((val >> 32) ^ val) & 0xffffffffL) * 3523216699L) >> 32);
+        return hash;
+        // https://lemire.me/blog/2015/10/22/faster-hashing-without-effort/
     }
 
     static void processMappedRange(MemorySegment ms, boolean frontPad, boolean backPad, long start, long end, final OpenHashTable localAgg) {
@@ -310,7 +289,6 @@ public class CalculateAverage_ptimmins {
         long limit = end - padding;
 
         var needle = ByteVector.broadcast(ByteVector.SPECIES_256, ';');
-        CRC32C crc32c = new CRC32C();
         while (curr < limit) {
 
             int segStart = 0;
@@ -328,10 +306,7 @@ public class CalculateAverage_ptimmins {
                 segStart += 32;
             }
 
-            crc32c.reset();
-            for (int i = 0; i < sLen; i++) {
-                crc32c.update(buf[i]);
-            }
+            int hash = hash(buf, sLen);
 
             curr += sLen;
             curr++; // semicolon
@@ -359,7 +334,7 @@ public class CalculateAverage_ptimmins {
             }
             temp *= sign;
 
-            localAgg.add(buf, sLen, temp, (int) crc32c.getValue());
+            localAgg.add(buf, sLen, temp, hash);
         }
 
         // finish with scalars
@@ -371,14 +346,26 @@ public class CalculateAverage_ptimmins {
     static HashMap<String, MeasurementAggregator> mergeAggregations(ArrayList<OpenHashTable> localAggs) {
         HashMap<String, MeasurementAggregator> global = new HashMap<>();
 
+        // HashSet<Integer> uniquesHashValues = new HashSet<Integer>();
+        // HashSet<String> uniqueCities = new HashSet<String>();
+        // HashMap<String, HashSet<Integer>> cityToHash = new HashMap<>();
+
         for (var agg : localAggs) {
             for (OpenHashTable.Entry entry : agg.entries) {
 
                 if (entry == null) {
                     continue;
                 }
+                // uniquesHashValues.add(entry.hash);
 
                 String station = new String(entry.key, StandardCharsets.UTF_8); // for UTF-8 encoding
+                // uniqueCities.add(station);
+                //
+                // if (!cityToHash.containsKey(station)) {
+                // cityToHash.put(station, new HashSet<>());
+                // }
+                // cityToHash.get(station).add(entry.hash);
+
                 var currentVal = global.get(station);
                 if (currentVal != null) {
                     currentVal.merge(entry);
@@ -388,6 +375,15 @@ public class CalculateAverage_ptimmins {
                 }
             }
         }
+
+        //
+        // for (var pair : cityToHash.entrySet()) {
+        // if (pair.getValue().size() > 1) {
+        // System.err.println("multiple hashes: " + pair.getKey() + " " + pair.getValue());
+        // }
+        // }
+
+        // System.err.println("Unique stations: " + uniqueCities.size() + ", unique hash values: " + uniquesHashValues.size());
         return global;
     }
 
