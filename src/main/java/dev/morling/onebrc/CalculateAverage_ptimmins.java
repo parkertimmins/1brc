@@ -16,12 +16,15 @@
 package dev.morling.onebrc;
 
 import jdk.incubator.vector.ByteVector;
+import jdk.incubator.vector.VectorMask;
+import jdk.incubator.vector.VectorOperators;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 
 import java.lang.foreign.ValueLayout;
 import java.lang.reflect.Array;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -248,11 +251,11 @@ public class CalculateAverage_ptimmins {
     static short[] digits10s = { 0, 100, 200, 300, 400, 500, 600, 700, 800, 900 };
     static short[] digits1s = { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 };
 
-    static void processMappedRange(MemorySegment ms, boolean frontPad, boolean backPad, long start, long end, final OpenHashTable localAgg) {
+    static void processScalarEnd(MemorySegment ms, long start, long end, final OpenHashTable localAgg) {
         byte[] buf = new byte[128];
 
-        long curr = frontPad ? findNextEntryStart(ms, start) : start;
-        long limit = backPad ? end - padding : end;
+        long curr = start;
+        long limit = end;
 
         CRC32C crc32c = new CRC32C();
         while (curr < limit) {
@@ -294,6 +297,72 @@ public class CalculateAverage_ptimmins {
             temp *= sign;
 
             localAgg.add(buf, sLen, temp, (int) crc32c.getValue());
+        }
+    }
+
+
+    static void processMappedRange(MemorySegment ms, boolean frontPad, boolean backPad, long start, long end, final OpenHashTable localAgg) {
+        byte[] buf = new byte[128];
+
+        long curr = frontPad ? findNextEntryStart(ms, start) : start;
+        long limit = end - padding;
+
+        var needle = ByteVector.broadcast(ByteVector.SPECIES_256, ';');
+        CRC32C crc32c = new CRC32C();
+        while (curr < limit) {
+
+            int segStart = 0;
+            int sLen;
+
+            while (true) {
+                var section = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, ms, curr + segStart, ByteOrder.LITTLE_ENDIAN);
+                section.intoArray(buf, segStart);
+                VectorMask<Byte> matches = section.compare(VectorOperators.EQ, needle);
+                int idx = matches.firstTrue();
+                if (idx != 32) {
+                    sLen = segStart + idx;
+                    break;
+                }
+                segStart += 32;
+            }
+
+            crc32c.reset();
+            for (int i = 0; i < sLen; i++) {
+                crc32c.update(buf[i]);
+            }
+
+            curr += sLen;
+            curr++; //semicolon
+
+            short sign = 1;
+            if (ms.get(ValueLayout.JAVA_BYTE, curr) == '-') {
+                sign = -1;
+                curr++;
+            }
+
+            int numDigits = ms.get(ValueLayout.JAVA_BYTE, curr + 2) == '.' ? 3 : 2;
+            short temp;
+            if (numDigits == 3) {
+                int d10s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr)) - '0';
+                int d1s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr+1)) - '0';
+                int d0s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr+3)) - '0';
+                temp = (short) (digits10s[d10s] + digits1s[d1s] + d0s);
+                curr += 5;
+            }
+            else {
+                int d1s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr)) - '0';
+                int d0s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr + 2)) - '0';
+                temp = (short) (digits1s[d1s] + d0s);
+                curr += 4;
+            }
+            temp *= sign;
+
+            localAgg.add(buf, sLen, temp, (int) crc32c.getValue());
+        }
+
+        // finish with scalars
+        if (!backPad) {
+            processScalarEnd(ms, curr, end, localAgg);
         }
     }
 
