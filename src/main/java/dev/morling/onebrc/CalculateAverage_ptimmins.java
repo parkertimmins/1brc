@@ -122,6 +122,8 @@ public class CalculateAverage_ptimmins {
             short max;
             long sum;
             long count;
+
+            int hash;
         }
 
         static final int bits = 14;
@@ -132,7 +134,7 @@ public class CalculateAverage_ptimmins {
         final Entry[] entries = new Entry[tableSize];
 
         void add(byte[] buf, int sLen, short val, int hash) {
-            int idx = (hash >> shift) & mask;
+            int idx = hash & mask;
 
             while (true) {
                 Entry entry = entries[idx];
@@ -145,10 +147,11 @@ public class CalculateAverage_ptimmins {
                     entry.min = entry.max = val;
                     entry.sum = val;
                     entry.count = 1;
+                    entry.hash = hash;
                     break;
                 }
                 else {
-                    if (entry.key.length == sLen && Arrays.equals(entry.key, 0, sLen, buf, 0, sLen)) {
+                    if (entry.hash == hash && entry.key.length == sLen && Arrays.equals(entry.key, 0, sLen, buf, 0, sLen)) {
                         entry.min = (short) Math.min(entry.min, val);
                         entry.max = (short) Math.max(entry.max, val);
                         entry.sum += val;
@@ -300,7 +303,6 @@ public class CalculateAverage_ptimmins {
         }
     }
 
-
     static void processMappedRange(MemorySegment ms, boolean frontPad, boolean backPad, long start, long end, final OpenHashTable localAgg) {
         byte[] buf = new byte[128];
 
@@ -332,7 +334,7 @@ public class CalculateAverage_ptimmins {
             }
 
             curr += sLen;
-            curr++; //semicolon
+            curr++; // semicolon
 
             short sign = 1;
             if (ms.get(ValueLayout.JAVA_BYTE, curr) == '-') {
@@ -344,8 +346,8 @@ public class CalculateAverage_ptimmins {
             short temp;
             if (numDigits == 3) {
                 int d10s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr)) - '0';
-                int d1s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr+1)) - '0';
-                int d0s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr+3)) - '0';
+                int d1s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr + 1)) - '0';
+                int d0s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr + 3)) - '0';
                 temp = (short) (digits10s[d10s] + digits1s[d1s] + d0s);
                 curr += 5;
             }
