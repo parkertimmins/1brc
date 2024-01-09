@@ -33,8 +33,8 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class CalculateAverage_ptimmins {
-    private static final String FILE = "./measurements.txt";
-    // private static final String FILE = "./full_measurements.no_license";
+     private static final String FILE = "./measurements.txt";
+//    private static final String FILE = "./full_measurements.no_license";
 
     private static record ResultRow(double min, double mean, double max) {
         public String toString() {
@@ -341,80 +341,81 @@ public class CalculateAverage_ptimmins {
 
         long entryStart = curr;
 
-        // byte lastChar = '\n';
-        // while (!isAligned32(curr)) {
-        // if (lastChar == ';') {
-        // entryStart = processEntry(buf, entryStart, curr - 1, ms, localAgg);
-        // }
-        // lastChar = ms.get(ValueLayout.JAVA_BYTE, curr);
-        // curr++;
-        // }
-        // if (lastChar == ';') {
-        // entryStart = processEntry(buf, entryStart, curr - 1, ms, localAgg);
-        // }
+        byte lastChar = '\n';
+        while (!isAligned32(curr)) {
+            if (lastChar == ';') {
+                entryStart = processEntry(buf, entryStart, curr - 1, ms, localAgg);
+            }
+            lastChar = ms.get(ValueLayout.JAVA_BYTE, curr);
+            curr++;
+        }
+        if (lastChar == ';') {
+            entryStart = processEntry(buf, entryStart, curr - 1, ms, localAgg);
+        }
 
         // System.out.println("address: " + Long.toHexString(ms.address()) + " " + isAligned32(ms.address()) + " " + (ms.address() % 32));
-        ByteVector section = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, ms, curr, ByteOrder.LITTLE_ENDIAN);
-        var needle = ByteVector.broadcast(ByteVector.SPECIES_256, ';');
-        long semiMatches = section.compare(VectorOperators.EQ, needle).toLong();
 
-        while (entryStart < limit) {
-            while (semiMatches == 0) { // TODO and curr < limit (or maybe not needed, as there is guaranteed to be one)
-                curr += 32;
-                section = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, ms, curr, ByteOrder.LITTLE_ENDIAN);
-                semiMatches = section.compare(VectorOperators.EQ, needle).toLong();
-            }
+        while (curr < limit) {
+            var section = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, ms, curr, ByteOrder.LITTLE_ENDIAN);
+            var semiMatchesMask = section.eq((byte) ';');
+            var semiMatches = semiMatchesMask.toLong();
 
-            int idx = Long.numberOfTrailingZeros(semiMatches);
-            semiMatches &= ~(1L << idx); // unset semi match
-            final long semiIdx = curr + idx;
-            // entryStart = processEntry(buf, entryStart, semiIdx, ms, localAgg);
+            while (semiMatches != 0) { // TODO and curr < limit (or maybe not needed, as there is guaranteed to be one)
+                int idx = Long.numberOfTrailingZeros(semiMatches);
+                semiMatches &= ~(1L << idx); // unset semi match
+                final long semiIdx = curr + idx;
+                // entryStart = processEntry(buf, entryStart, semiIdx, ms, localAgg);
+                //
 
-            int j = 0;
-            for (long i = entryStart; i < semiIdx; ++i, ++j) {
-                buf[j] = ms.get(ValueLayout.JAVA_BYTE, i);
-            }
+                //
+                int j = 0;
+                for (long i = entryStart; i < semiIdx; ++i, ++j) {
+                    buf[j] = ms.get(ValueLayout.JAVA_BYTE, i);
+                }
 
-            int sLen = j;
-            int hash = hash(buf, sLen);
+                int sLen = j;
+                int hash = hash(buf, sLen);
 
-            long tempIdx = semiIdx + 1;
-            short temp;
-            long nextEntryStart;
-            if (ms.get(ValueLayout.JAVA_BYTE, tempIdx) == '-') {
-                if (ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2) != '.') {
-                    int d2 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
-                    int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2)) - '0';
-                    int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 4)) - '0';
-                    temp = (short) (digits10s[d2] + digits1s[d1] + d0);
-                    nextEntryStart = tempIdx + 6;
+                long tempIdx = semiIdx + 1;
+                short temp;
+                long nextEntryStart;
+                if (ms.get(ValueLayout.JAVA_BYTE, tempIdx) == '-') {
+                    if (ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2) != '.') {
+                        int d2 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
+                        int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2)) - '0';
+                        int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 4)) - '0';
+                        temp = (short) (digits10s[d2] + digits1s[d1] + d0);
+                        nextEntryStart = tempIdx + 6;
+                    }
+                    else {
+                        int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
+                        int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 3)) - '0';
+                        temp = (short) (digits1s[d1] + d0);
+                        nextEntryStart = tempIdx + 5;
+                    }
+                    temp = (short) -temp;
                 }
                 else {
-                    int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
-                    int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 3)) - '0';
-                    temp = (short) (digits1s[d1] + d0);
-                    nextEntryStart = tempIdx + 5;
+                    if (ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1) != '.') {
+                        int d2 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx)) - '0';
+                        int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
+                        int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 3)) - '0';
+                        temp = (short) (digits10s[d2] + digits1s[d1] + d0);
+                        nextEntryStart = tempIdx + 5;
+                    }
+                    else {
+                        int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx)) - '0';
+                        int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2)) - '0';
+                        temp = (short) (digits1s[d1] + d0);
+                        nextEntryStart = tempIdx + 4;
+                    }
                 }
-                temp = (short) -temp;
-            }
-            else {
-                if (ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1) != '.') {
-                    int d2 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx)) - '0';
-                    int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
-                    int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 3)) - '0';
-                    temp = (short) (digits10s[d2] + digits1s[d1] + d0);
-                    nextEntryStart = tempIdx + 5;
-                }
-                else {
-                    int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx)) - '0';
-                    int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2)) - '0';
-                    temp = (short) (digits1s[d1] + d0);
-                    nextEntryStart = tempIdx + 4;
-                }
+
+                localAgg.add(buf, sLen, temp, hash);
+                entryStart = nextEntryStart;
             }
 
-            localAgg.add(buf, sLen, temp, hash);
-            entryStart = nextEntryStart;
+            curr += 32;
         }
 
         // finish with scalars
