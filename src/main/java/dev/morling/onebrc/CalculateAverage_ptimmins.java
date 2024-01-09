@@ -18,6 +18,7 @@ package dev.morling.onebrc;
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.VectorMask;
 import jdk.incubator.vector.VectorOperators;
+import sun.misc.Unsafe;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -33,11 +34,10 @@ import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.zip.CRC32C;
 
 public class CalculateAverage_ptimmins {
-    private static final String FILE = "./measurements.txt";
-    // private static final String FILE = "./full_measurements.no_license";
+//    private static final String FILE = "./measurements.txt";
+     private static final String FILE = "./full_measurements.no_license";
 
     private static record ResultRow(double min, double mean, double max) {
         public String toString() {
@@ -123,7 +123,6 @@ public class CalculateAverage_ptimmins {
             short max;
             long sum;
             long count;
-
             int hash;
         }
 
@@ -288,60 +287,82 @@ public class CalculateAverage_ptimmins {
         long curr = frontPad ? findNextEntryStart(ms, start) : start;
         long limit = end - padding;
 
+        long entryStart = curr;
+
+        ByteVector section = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, ms, curr, ByteOrder.LITTLE_ENDIAN);
         var needle = ByteVector.broadcast(ByteVector.SPECIES_256, ';');
-        while (curr < limit) {
+        long semiMatches = section.compare(VectorOperators.EQ, needle).toLong();
 
-            int segStart = 0;
-            int sLen;
-
-            while (true) {
-                var section = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, ms, curr + segStart, ByteOrder.LITTLE_ENDIAN);
-                section.intoArray(buf, segStart);
-                VectorMask<Byte> matches = section.compare(VectorOperators.EQ, needle);
-                int idx = matches.firstTrue();
-                if (idx != 32) {
-                    sLen = segStart + idx;
-                    break;
-                }
-                segStart += 32;
+        while (entryStart < limit) {
+            while (semiMatches == 0) { // TODO and curr < limit (or maybe not needed, as there is guaranteed to be one)
+                curr += 32;
+                section = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, ms, curr, ByteOrder.LITTLE_ENDIAN);
+                semiMatches = section.compare(VectorOperators.EQ, needle).toLong();
             }
 
+            int idx = Long.numberOfTrailingZeros(semiMatches);
+
+            // unset idx
+            semiMatches &= ~(1L << idx);
+
+            long nextSemiIdx = curr + idx;
+
+            int j = 0;
+            for (long i = entryStart; i < nextSemiIdx; ++i, ++j) {
+                buf[j] = ms.get(ValueLayout.JAVA_BYTE, i);
+            }
+
+            int sLen = j;
             int hash = hash(buf, sLen);
 
-            curr += sLen;
-            curr++; // semicolon
-
-            short sign = 1;
-            if (ms.get(ValueLayout.JAVA_BYTE, curr) == '-') {
-                sign = -1;
-                curr++;
-            }
-
-            int numDigits = ms.get(ValueLayout.JAVA_BYTE, curr + 2) == '.' ? 3 : 2;
+            long tempIdx = nextSemiIdx + 1;
             short temp;
-            if (numDigits == 3) {
-                int d10s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr)) - '0';
-                int d1s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr + 1)) - '0';
-                int d0s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr + 3)) - '0';
-                temp = (short) (digits10s[d10s] + digits1s[d1s] + d0s);
-                curr += 5;
+            if (ms.get(ValueLayout.JAVA_BYTE, tempIdx) == '-') {
+                if (ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2) != '.') {
+                    int d2 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
+                    int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2)) - '0';
+                    int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 4)) - '0';
+                    temp = (short) (digits10s[d2] + digits1s[d1] + d0);
+                    entryStart = tempIdx + 6;
+                }
+                else {
+                    int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
+                    int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 3)) - '0';
+                    temp = (short) (digits1s[d1] + d0);
+                    entryStart = tempIdx + 5;
+                }
+                temp = (short) -temp;
             }
             else {
-                int d1s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr)) - '0';
-                int d0s = ((char) ms.get(ValueLayout.JAVA_BYTE, curr + 2)) - '0';
-                temp = (short) (digits1s[d1s] + d0s);
-                curr += 4;
+                if (ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1) != '.') {
+                    int d2 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx)) - '0';
+                    int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
+                    int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 3)) - '0';
+                    temp = (short) (digits10s[d2] + digits1s[d1] + d0);
+                    entryStart = tempIdx + 5;
+                }
+                else {
+                    int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx)) - '0';
+                    int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2)) - '0';
+                    temp = (short) (digits1s[d1] + d0);
+                    entryStart = tempIdx + 4;
+                }
             }
-            temp *= sign;
 
             localAgg.add(buf, sLen, temp, hash);
         }
 
         // finish with scalars
         if (!backPad) {
-            processScalarEnd(ms, curr, end, localAgg);
+            processScalarEnd(ms, entryStart, end, localAgg);
         }
     }
+
+//    private static void copySegmentToHeap(MemorySegment src, long srcOffset, byte[] target, int targetOffset, int len) {
+//        Objects.checkFromIndexSize(srcOffset, len, src.byteSize());
+//        Unsafe.copyMemory(null, src.address().toRawLongValue() + srcOffset, target, Unsafe.ARRAY_BYTE_BASE_OFFSET + targetOffset, len);
+//        //MemorySegment.ofArray(target).asSlice(targetOffset, len).copyFrom(src.asSlice(srcOffset, len));
+//    }
 
     static HashMap<String, MeasurementAggregator> mergeAggregations(ArrayList<OpenHashTable> localAggs) {
         HashMap<String, MeasurementAggregator> global = new HashMap<>();
@@ -392,13 +413,15 @@ public class CalculateAverage_ptimmins {
         RandomAccessFile file = new RandomAccessFile(FILE, "r");
         FileChannel channel = file.getChannel();
 
-        // int numThreads = 1;
-        int numThreads = Runtime.getRuntime().availableProcessors();
+//        int numThreads = 1;
+         int numThreads = Runtime.getRuntime().availableProcessors();
         System.out.println("Running on " + numThreads + " threads");
 
         final long fileSize = channel.size();
         final MemorySegment ms = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
         final ArrayList<OpenHashTable> localAggs = new ArrayList<>(numThreads);
+
+        // final long batchSize = fileSize / numThreads + 1;
 
         long startTime = System.currentTimeMillis();
         Thread[] threads = new Thread[numThreads];
@@ -422,7 +445,7 @@ public class CalculateAverage_ptimmins {
                     boolean frontPad = !first;
                     boolean last = endBatch == fileSize;
                     boolean backPad = !last;
-                    System.err.println("Thread " + threadId + " processing " + startBatch + " to " + endBatch + " at " + (System.currentTimeMillis() - startTime));
+                    // System.err.println("Thread " + threadId + " processing " + startBatch + " to " + endBatch + " at " + (System.currentTimeMillis() - startTime));
                     processMappedRange(ms, frontPad, backPad, startBatch, endBatch, localAgg);
                 }
             }
