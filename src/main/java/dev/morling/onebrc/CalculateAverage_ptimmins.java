@@ -33,8 +33,8 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class CalculateAverage_ptimmins {
-     private static final String FILE = "./measurements.txt";
-//    private static final String FILE = "./full_measurements.no_license";
+//    private static final String FILE = "./measurements.txt";
+     private static final String FILE = "./full_measurements.no_license";
 
     private static record ResultRow(double min, double mean, double max) {
         public String toString() {
@@ -377,42 +377,18 @@ public class CalculateAverage_ptimmins {
                 int hash = hash(buf, sLen);
 
                 long tempIdx = semiIdx + 1;
-                short temp;
-                long nextEntryStart;
-                if (ms.get(ValueLayout.JAVA_BYTE, tempIdx) == '-') {
-                    if (ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2) != '.') {
-                        int d2 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
-                        int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2)) - '0';
-                        int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 4)) - '0';
-                        temp = (short) (digits10s[d2] + digits1s[d1] + d0);
-                        nextEntryStart = tempIdx + 6;
-                    }
-                    else {
-                        int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
-                        int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 3)) - '0';
-                        temp = (short) (digits1s[d1] + d0);
-                        nextEntryStart = tempIdx + 5;
-                    }
-                    temp = (short) -temp;
-                }
-                else {
-                    if (ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1) != '.') {
-                        int d2 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx)) - '0';
-                        int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1)) - '0';
-                        int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 3)) - '0';
-                        temp = (short) (digits10s[d2] + digits1s[d1] + d0);
-                        nextEntryStart = tempIdx + 5;
-                    }
-                    else {
-                        int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx)) - '0';
-                        int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + 2)) - '0';
-                        temp = (short) (digits1s[d1] + d0);
-                        nextEntryStart = tempIdx + 4;
-                    }
-                }
+
+                boolean neg = ms.get(ValueLayout.JAVA_BYTE, tempIdx) == '-';
+                boolean twoDig = ms.get(ValueLayout.JAVA_BYTE, tempIdx + 1 + (neg ? 1 : 0)) == '.';
+                int len = 3 + (neg ? 1 : 0) + (twoDig ? 0 : 1);
+                int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + len - 1)) - '0';
+                int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + len - 3)) - '0';
+                int base = d0 + digits1s[d1] + (twoDig ? 0 : digits10s[((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + len - 4)) - '0']);
+                int sign = neg ? -1 : 1;
+                short temp = (short) (sign * base);
 
                 localAgg.add(buf, sLen, temp, hash);
-                entryStart = nextEntryStart;
+                entryStart = tempIdx + len + 1;
             }
 
             curr += 32;
@@ -423,6 +399,8 @@ public class CalculateAverage_ptimmins {
             processScalarEnd(ms, entryStart, end, localAgg);
         }
     }
+
+    private static final VectorSpecies<Byte> SPECIES = ByteVector.SPECIES_256;
 
     // private static void copySegmentToHeap(MemorySegment src, long srcOffset, byte[] target, int targetOffset, int len) {
     // Objects.checkFromIndexSize(srcOffset, len, src.byteSize());
@@ -487,7 +465,8 @@ public class CalculateAverage_ptimmins {
         final MemorySegment ms = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
         final ArrayList<OpenHashTable> localAggs = new ArrayList<>(numThreads);
 
-        final long batchSize = fileSize / numThreads + 1;
+        // final long batchSize = fileSize / numThreads + 1;
+        final long batchSize = 1_000_000;
 
         long startTime = System.currentTimeMillis();
         Thread[] threads = new Thread[numThreads];
