@@ -355,19 +355,34 @@ public class CalculateAverage_ptimmins {
 
         // System.out.println("address: " + Long.toHexString(ms.address()) + " " + isAligned32(ms.address()) + " " + (ms.address() % 32));
 
+        // ";9.9\na;9.9\na;9.9\na;9.9\na;9.9\na;9" - 32 char section with most possible semicolons, that being 6
+        int[] indices = new int[6]; // can make short maybe
+
         while (curr < limit) {
             var section = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, ms, curr, ByteOrder.LITTLE_ENDIAN);
             var semiMatchesMask = section.eq((byte) ';');
             var semiMatches = semiMatchesMask.toLong();
 
-            while (semiMatches != 0) { // TODO and curr < limit (or maybe not needed, as there is guaranteed to be one)
-                int idx = Long.numberOfTrailingZeros(semiMatches);
-                semiMatches &= ~(1L << idx); // unset semi match
-                final long semiIdx = curr + idx;
-                // entryStart = processEntry(buf, entryStart, semiIdx, ms, localAgg);
-                //
+            // https://arxiv.org/pdf/1902.08318.pdf
+            int ptr = 0;
+            int numBits = Long.bitCount(semiMatches);
+            indices[ptr++] = Long.numberOfTrailingZeros(semiMatches);
+            semiMatches &= (semiMatches - 1);
+            indices[ptr++] = Long.numberOfTrailingZeros(semiMatches);
+            semiMatches &= (semiMatches - 1);
+            indices[ptr++] = Long.numberOfTrailingZeros(semiMatches);
+            semiMatches &= (semiMatches - 1);
+            indices[ptr++] = Long.numberOfTrailingZeros(semiMatches);
+            semiMatches &= (semiMatches - 1);
+            indices[ptr++] = Long.numberOfTrailingZeros(semiMatches);
+            semiMatches &= (semiMatches - 1);
+            indices[ptr] = Long.numberOfTrailingZeros(semiMatches);
+            // semiMatches &= (semiMatches - 1);
 
-                //
+            for (int bitIdx = 0; bitIdx < numBits; ++bitIdx) {
+                int idx = indices[bitIdx];
+                final long semiIdx = curr + idx;
+
                 int j = 0;
                 for (long i = entryStart; i < semiIdx; ++i, ++j) {
                     buf[j] = ms.get(ValueLayout.JAVA_BYTE, i);
