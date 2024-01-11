@@ -79,8 +79,8 @@ public class CalculateAverage_ptimmins {
             byte[] key;
             short min;
             short max;
-            long sum;
-            long count;
+            long sum = 0;
+            long count = 0;
             int hash;
         }
 
@@ -101,8 +101,8 @@ public class CalculateAverage_ptimmins {
                     entry = entries[idx] = new Entry();
                     entry.key = Arrays.copyOf(buf, sLen);
                     entry.min = entry.max = val;
-                    entry.sum = val;
-                    entry.count = 1;
+                    entry.sum += val;
+                    entry.count++;
                     entry.hash = hash;
                     break;
                 }
@@ -312,8 +312,8 @@ public class CalculateAverage_ptimmins {
                 int d0 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + len - 1)) - '0';
                 int d1 = ((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + len - 3)) - '0';
                 int base = d0 + digits1s[d1] + (twoDig ? 0 : digits10s[((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + len - 4)) - '0']);
-                int sign = neg ? -1 : 1;
-                short temp = (short) (sign * base);
+//                int base = d0 + d1 * 10 + (twoDig ? 0 : (((char) ms.get(ValueLayout.JAVA_BYTE, tempIdx + len - 4)) - '0') * 100);
+                short temp = (short) (neg ? -base : base);
 
                 localAgg.add(buf, sLen, temp, hash);
                 entryStart = tempIdx + len + 1;
